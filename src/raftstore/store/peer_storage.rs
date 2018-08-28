@@ -177,7 +177,7 @@ impl EntryCache {
 
     fn append(&mut self, tag: &str, entries: &[Entry]) {
         let current_cache_count = self.cache.len();
-        defer!(TOTAL_ENTRY_CACHE_COUNT.add(self.cache.len() - current_cache_count));
+        defer!(TOTAL_ENTRY_CACHE_COUNT.add((self.cache.len() - current_cache_count) as i64));
 
         if entries.is_empty() {
             return;
