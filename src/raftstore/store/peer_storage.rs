@@ -219,7 +219,7 @@ impl EntryCache {
 
     pub fn compact_to(&mut self, idx: u64) {
         let current_cache_count = self.cache.len();
-        defer!(TOTAL_ENTRY_CACHE_COUNT.add(self.cache.len() - current_cache_count));
+        defer!(TOTAL_ENTRY_CACHE_COUNT.add((self.cache.len() - current_cache_count) as i64));
 
         let cache_first_idx = self.first_index().unwrap_or(u64::MAX);
         if cache_first_idx > idx {
