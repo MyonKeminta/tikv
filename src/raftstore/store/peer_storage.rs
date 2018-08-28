@@ -176,6 +176,9 @@ impl EntryCache {
     }
 
     fn append(&mut self, tag: &str, entries: &[Entry]) {
+        let current_cache_count = self.cache.len();
+        defer!(TOTAL_ENTRY_CACHE_COUNT.add(self.cache.len() - current_cache_count));
+
         if entries.is_empty() {
             return;
         }
@@ -215,6 +218,9 @@ impl EntryCache {
     }
 
     pub fn compact_to(&mut self, idx: u64) {
+        let current_cache_count = self.cache.len();
+        defer!(TOTAL_ENTRY_CACHE_COUNT.add(self.cache.len() - current_cache_count));
+
         let cache_first_idx = self.first_index().unwrap_or(u64::MAX);
         if cache_first_idx > idx {
             return;

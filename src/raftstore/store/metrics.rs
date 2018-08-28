@@ -221,4 +221,9 @@ lazy_static! {
             "Bucketed histogram of rocksdb ingestion durations",
             exponential_buckets(0.005, 2.0, 20).unwrap()
         ).unwrap();
+    pub static ref TOTAL_ENTRY_CACHE_COUNT: IntGauge =
+        register_int_gauge!(
+            "tikv_raftstore_entry_cache_total",
+            "-"
+        ).unwrap();
 }
