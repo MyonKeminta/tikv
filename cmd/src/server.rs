@@ -18,6 +18,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use tikv::config::TiKvConfig;
 use tikv::coprocessor;
+use tikv::gc_worker::AutoGCConfig;
 use tikv::import::{ImportSSTService, SSTImporter};
 use tikv::raftstore::coprocessor::{CoprocessorHost, RegionInfoAccessor};
 use tikv::raftstore::store::fsm::store::{StoreMeta, PENDING_VOTES_CAP};
@@ -33,7 +34,7 @@ use tikv::storage::lock_manager::{
     register_detector_role_change_observer, Detector, DetectorScheduler,
     Service as DeadlockService, WaiterManager, WaiterMgrScheduler,
 };
-use tikv::storage::{self, AutoGCConfig, DEFAULT_ROCKSDB_SUB_DIR};
+use tikv::storage::{self, DEFAULT_ROCKSDB_SUB_DIR};
 use tikv_util::check_environment_variables;
 use tikv_util::security::SecurityManager;
 use tikv_util::time::Monitor;

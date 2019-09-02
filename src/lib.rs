@@ -60,6 +60,7 @@ extern crate test;
 
 pub mod config;
 pub mod coprocessor;
+pub mod gc_worker;
 pub mod import;
 pub mod raftstore;
 pub mod server;

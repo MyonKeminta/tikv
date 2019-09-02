@@ -11,8 +11,8 @@ use kvproto::tikvpb::TikvClient;
 
 use test_raftstore::{must_get_equal, must_get_none, new_server_cluster};
 use test_storage::new_raft_engine;
+use tikv::gc_worker::GC_MAX_PENDING_TASKS;
 use tikv::storage;
-use tikv::storage::gc_worker::GC_MAX_PENDING_TASKS;
 use tikv::storage::*;
 use tikv_util::HandyRwLock;
 

@@ -8,7 +8,6 @@
 //! is used by the [`Server`](server::Server). The [`BTreeEngine`](storage::kv::BTreeEngine) and [`RocksEngine`](storage::RocksEngine) are used for testing only.
 
 pub mod config;
-pub mod gc_worker;
 pub mod kv;
 pub mod lock_manager;
 mod metrics;
@@ -31,12 +30,11 @@ use kvproto::kvrpcpb::{CommandPri, Context, KeyRange, LockInfo};
 use crate::server::ServerRaftStoreRouter;
 use tikv_util::collections::HashMap;
 
-use self::gc_worker::GCWorker;
 use self::metrics::*;
 use self::mvcc::Lock;
+use crate::gc_worker::GCWorker;
 
 pub use self::config::{BlockCacheConfig, Config, DEFAULT_DATA_DIR, DEFAULT_ROCKSDB_SUB_DIR};
-pub use self::gc_worker::{AutoGCConfig, GCSafePointProvider};
 pub use self::kv::{
     destroy_tls_engine, set_tls_engine, with_tls_engine, CFStatistics, Cursor, CursorBuilder,
     Engine, Error as EngineError, FlowStatistics, FlowStatsReporter, Iterator, Modify,
@@ -50,6 +48,7 @@ use self::txn::scheduler::Scheduler as TxnScheduler;
 pub use self::txn::{FixtureStore, FixtureStoreScanner};
 pub use self::txn::{Msg, Scanner, Scheduler, SnapshotStore, Store};
 pub use self::types::{Key, KvPair, MvccInfo, Value};
+use crate::gc_worker::{AutoGCConfig, GCSafePointProvider};
 pub type Callback<T> = Box<dyn FnOnce(Result<T>) + Send>;
 
 // Short value max len must <= 255.
