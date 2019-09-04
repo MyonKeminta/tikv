@@ -1488,7 +1488,10 @@ mod tests {
 
     /// Assert the data in `storage` is the same as `expected_data`. Keys in `expected_data` should
     /// be encoded form without ts.
-    fn check_data<E: Engine>(storage: &Storage<E, DummyLockMgr>, expected_data: &BTreeMap<Vec<u8>, Vec<u8>>) {
+    fn check_data<E: Engine>(
+        storage: &Storage<E, DummyLockMgr>,
+        expected_data: &BTreeMap<Vec<u8>, Vec<u8>>,
+    ) {
         let scan_res = storage
             .async_scan(
                 Context::default(),

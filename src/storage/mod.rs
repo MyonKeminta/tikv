@@ -8,6 +8,7 @@
 //! is used by the [`Server`](server::Server). The [`BTreeEngine`](storage::kv::BTreeEngine) and [`RocksEngine`](storage::RocksEngine) are used for testing only.
 
 pub mod config;
+pub mod gc_worker;
 pub mod kv;
 pub mod lock_manager;
 mod metrics;
@@ -21,20 +22,21 @@ use std::io::Error as IoError;
 use std::sync::{atomic, Arc};
 use std::{cmp, error, u64};
 
-use engine::rocks::DB;
 use engine::{IterOption, DATA_KEY_PREFIX_LEN};
 use futures::{future, Future};
 use kvproto::errorpb;
 use kvproto::kvrpcpb::{CommandPri, Context, KeyRange, LockInfo};
 
-use crate::server::ServerRaftStoreRouter;
 use tikv_util::collections::HashMap;
+//use crate::gc_worker::GCWorker;
+//use crate::gc_worker::{AutoGCConfig, GCSafePointProvider};
 
 use self::metrics::*;
 use self::mvcc::Lock;
-use crate::gc_worker::GCWorker;
 
 pub use self::config::{BlockCacheConfig, Config, DEFAULT_DATA_DIR, DEFAULT_ROCKSDB_SUB_DIR};
+use self::gc_worker::DummyGCWorker;
+pub use self::gc_worker::GCWorker;
 pub use self::kv::{
     destroy_tls_engine, set_tls_engine, with_tls_engine, CFStatistics, Cursor, CursorBuilder,
     Engine, Error as EngineError, FlowStatistics, FlowStatsReporter, Iterator, Modify,
@@ -48,8 +50,6 @@ use self::txn::scheduler::Scheduler as TxnScheduler;
 pub use self::txn::{FixtureStore, FixtureStoreScanner};
 pub use self::txn::{Msg, Scanner, Scheduler, SnapshotStore, Store};
 pub use self::types::{Key, KvPair, MvccInfo, Value};
-use crate::gc_worker::{AutoGCConfig, GCSafePointProvider};
-
 pub type Callback<T> = Box<dyn FnOnce(Result<T>) + Send>;
 
 // Short value max len must <= 255.
@@ -603,8 +603,7 @@ impl Options {
 pub struct TestStorageBuilder<E: Engine> {
     engine: E,
     config: Config,
-    local_storage: Option<Arc<DB>>,
-    raft_store_router: Option<ServerRaftStoreRouter>,
+    gc_worker: Box<dyn GCWorker>,
 }
 
 impl TestStorageBuilder<RocksEngine> {
@@ -613,8 +612,7 @@ impl TestStorageBuilder<RocksEngine> {
         Self {
             engine: TestEngineBuilder::new().build().unwrap(),
             config: Config::default(),
-            local_storage: None,
-            raft_store_router: None,
+            gc_worker: Box::new(DummyGCWorker {}),
         }
     }
 }
@@ -624,8 +622,7 @@ impl<E: Engine> TestStorageBuilder<E> {
         Self {
             engine,
             config: Config::default(),
-            local_storage: None,
-            raft_store_router: None,
+            gc_worker: Box::new(DummyGCWorker {}),
         }
     }
 
@@ -637,19 +634,11 @@ impl<E: Engine> TestStorageBuilder<E> {
         self
     }
 
-    /// Set local storage for GCWorker.
+    /// Set GCWorker of the Storage.
     ///
-    /// By default, `None` will be used.
-    pub fn local_storage(mut self, local_storage: Arc<DB>) -> Self {
-        self.local_storage = Some(local_storage);
-        self
-    }
-
-    /// Set raft store router for GCWorker.
-    ///
-    /// By default, `None` will be used.
-    pub fn raft_store_router(mut self, raft_store_router: ServerRaftStoreRouter) -> Self {
-        self.raft_store_router = Some(raft_store_router);
+    /// By default, `DummyGCWorker`, which does nothing, will be used.
+    pub fn gc_worker(mut self, gc_worker: Box<dyn GCWorker>) -> Self {
+        self.gc_worker = gc_worker;
         self
     }
 
@@ -659,14 +648,7 @@ impl<E: Engine> TestStorageBuilder<E> {
             &crate::config::StorageReadPoolConfig::default_for_test(),
             self.engine.clone(),
         );
-        Storage::from_engine(
-            self.engine,
-            &self.config,
-            read_pool,
-            self.local_storage,
-            self.raft_store_router,
-            None,
-        )
+        Storage::from_engine(self.engine, &self.config, read_pool, self.gc_worker, None)
     }
 }
 
@@ -702,7 +684,9 @@ pub struct Storage<E: Engine, L: LockMgr> {
     read_pool_high: FuturePool,
 
     /// Used to handle requests related to GC.
-    gc_worker: GCWorker<E>,
+    /// This exists in `Storage` for compatibility concerns. Use `Box` to avoid adding extra generic
+    /// parameters to `Storage`.
+    gc_worker: Box<dyn GCWorker>,
 
     /// How many strong references. Thread pool and workers will be stopped
     /// once there are no more references.
@@ -751,10 +735,10 @@ impl<E: Engine, L: LockMgr> Drop for Storage<E, L> {
             return;
         }
 
-        let r = self.gc_worker.stop();
-        if let Err(e) = r {
-            error!("Failed to stop gc_worker:"; "err" => ?e);
-        }
+        //        let r = self.gc_worker.stop();
+        //        if let Err(e) = r {
+        //            error!("Failed to stop gc_worker:"; "err" => ?e);
+        //        }
 
         info!("Storage stopped.");
     }
@@ -766,8 +750,7 @@ impl<E: Engine, L: LockMgr> Storage<E, L> {
         engine: E,
         config: &Config,
         mut read_pool: Vec<FuturePool>,
-        local_storage: Option<Arc<DB>>,
-        raft_store_router: Option<ServerRaftStoreRouter>,
+        gc_worker: Box<dyn GCWorker>,
         lock_mgr: Option<L>,
     ) -> Result<Self> {
         let pessimistic_txn_enabled = lock_mgr.is_some();
@@ -778,14 +761,14 @@ impl<E: Engine, L: LockMgr> Storage<E, L> {
             config.scheduler_worker_pool_size,
             config.scheduler_pending_write_threshold.0 as usize,
         );
-        let mut gc_worker = GCWorker::new(
-            engine.clone(),
-            local_storage,
-            raft_store_router,
-            config.gc_ratio_threshold,
-        );
-
-        gc_worker.start()?;
+        //        let mut gc_worker = GCWorker::new(
+        //            engine.clone(),
+        //            local_storage,
+        //            raft_store_router,
+        //            config.gc_ratio_threshold,
+        //        );
+        //
+        //        gc_worker.start()?;
 
         let read_pool_high = read_pool.remove(2);
         let read_pool_normal = read_pool.remove(1);
@@ -806,13 +789,13 @@ impl<E: Engine, L: LockMgr> Storage<E, L> {
         })
     }
 
-    /// Starts running GC automatically.
-    pub fn start_auto_gc<S: GCSafePointProvider, R: RegionInfoProvider>(
-        &self,
-        cfg: AutoGCConfig<S, R>,
-    ) -> Result<()> {
-        self.gc_worker.start_auto_gc(cfg)
-    }
+    //    /// Starts running GC automatically.
+    //    pub fn start_auto_gc<S: GCSafePointProvider, R: RegionInfoProvider>(
+    //        &self,
+    //        cfg: AutoGCConfig<S, R>,
+    //    ) -> Result<()> {
+    //        self.gc_worker.start_auto_gc(cfg)
+    //    }
 
     /// Get the underlying `Engine` of the `Storage`.
     pub fn get_engine(&self) -> E {
