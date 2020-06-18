@@ -786,9 +786,13 @@ impl Initializer {
                     let key = Key::from_encoded_slice(encoded_key).into_raw().unwrap();
                     let lock = Lock::parse(value)?;
                     match lock.lock_type {
-                        LockType::Put | LockType::Delete => {
-                            resolver.track_lock(lock.ts, lock.min_commit_ts, key, lock.primary)
-                        }
+                        LockType::Put | LockType::Delete => resolver.track_lock(
+                            lock.ts,
+                            lock.min_commit_ts,
+                            key,
+                            lock.primary,
+                            lock.lock_type,
+                        ),
                         _ => (),
                     };
                 }
@@ -904,7 +908,7 @@ mod tests {
     use kvproto::kvrpcpb::Context;
     use raftstore::errors::Error as RaftStoreError;
     use raftstore::store::msg::CasualMessage;
-    use resolved_ts::TrackedTxn;
+    use resolved_ts::{TrackedTxn, TrackedTxnStatus};
     use std::collections::HashMap;
     use std::fmt::Display;
     use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -993,9 +997,10 @@ mod tests {
                     min_commit_ts: ts.next(),
                     primary: k.to_vec(),
                     locked_keys: Default::default(),
+                    status: TrackedTxnStatus::Alive,
                 })
                 .locked_keys
-                .insert(k.to_vec());
+                .insert(k.to_vec(), LockType::Put);
         }
 
         let region = Region::default();

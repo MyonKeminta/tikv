@@ -129,18 +129,6 @@ pub struct WriteRef<'a> {
 }
 
 impl WriteRef<'_> {
-    pub fn new(
-        write_type: WriteType,
-        start_ts: TimeStamp,
-        short_value: Option<&[u8]>,
-    ) -> WriteRef<'_> {
-        WriteRef {
-            write_type,
-            start_ts,
-            short_value,
-        }
-    }
-
     pub fn parse(mut b: &[u8]) -> Result<WriteRef<'_>> {
         let write_type_bytes = b
             .read_u8()

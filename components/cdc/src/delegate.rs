@@ -32,7 +32,7 @@ use resolved_ts::{Resolver, TrackedTxnStatus};
 use tikv::storage::txn::TxnEntry;
 use tikv_util::collections::HashMap;
 use tikv_util::mpsc::batch::Sender as BatchSender;
-use txn_types::{Key, Lock, LockType, TimeStamp, WriteRef, WriteType};
+use txn_types::{Key, Lock, LockType, TimeStamp, Write, WriteRef, WriteType};
 
 use crate::metrics::*;
 use crate::service::ConnID;
@@ -203,6 +203,7 @@ enum PendingLock {
         start_ts: TimeStamp,
         min_commit_ts: TimeStamp,
         primary: Vec<u8>,
+        lock_type: LockType,
     },
     Untrack {
         key: Vec<u8>,
@@ -424,12 +425,15 @@ impl Delegate {
                     start_ts,
                     min_commit_ts,
                     primary,
-                } => resolver.track_lock(start_ts, min_commit_ts, key, primary),
+                    lock_type,
+                } => resolver.track_lock(start_ts, min_commit_ts, key, primary, lock_type),
                 PendingLock::Untrack {
                     key,
                     start_ts,
                     commit_ts,
-                } => resolver.untrack_lock(start_ts, commit_ts, key),
+                } => {
+                    resolver.untrack_lock(start_ts, commit_ts, key);
+                }
             }
         }
         self.resolver = Some(resolver);
@@ -517,19 +521,23 @@ impl Delegate {
             "region_id" => self.region_id,
             "txns" => txn_status.len());
 
-        let (alive_txns, finished_txns) = txn_status
+        let (alive_txns, finished_txns): (Vec<_>, Vec<_>) = txn_status
             .into_iter()
             .partition(|t| t.get_min_commit_ts() != 0);
 
         resolver.update_txn_status(
-            alive_txns.map(|t| (t.get_start_ts().into(), t.get_min_commit_ts().into())),
+            alive_txns
+                .into_iter()
+                .map(|t| (t.get_start_ts().into(), t.get_min_commit_ts().into())),
         );
 
         for txn in finished_txns {
-            let status = if txn.is_rolled_back() {
+            let status = if txn.get_is_rolled_back() {
                 TrackedTxnStatus::RolledBack
             } else if txn.get_commit_ts() > 0 {
-                TrackedTxnStatus::Committed(txn.get_commit_ts().into())
+                TrackedTxnStatus::Committed {
+                    commit_ts: txn.get_commit_ts().into(),
+                }
             } else {
                 error!("unknown txn status received from CDC. ignroed";
                     "region_id" => self.region_id,
@@ -538,13 +546,19 @@ impl Delegate {
                 continue;
             };
 
-            let keys = resolver.pre_finish_txn(txn.get_start_ts().into(), status);
-            let commit_ts = if let TrackedTxnStatus(commit_ts) = status {
-                Some(commit_ts)
-            } else {
-                None
-            };
-            self.pre_finish_keys(txn.get_start_ts, commit_ts, keys);
+            if let Some(keys) = self
+                .resolver
+                .as_mut()
+                .unwrap()
+                .pre_finish_txn(txn.get_start_ts().into(), status)
+            {
+                let commit_ts = if let TrackedTxnStatus::Committed { commit_ts } = status {
+                    Some(commit_ts)
+                } else {
+                    None
+                };
+                self.pre_finish_keys(txn.get_start_ts().into(), commit_ts, keys);
+            }
         }
     }
 
@@ -694,11 +708,16 @@ impl Delegate {
                         Some(row.commit_ts)
                     };
                     match self.resolver {
-                        Some(ref mut resolver) => resolver.untrack_lock(
-                            row.start_ts.into(),
-                            commit_ts.map(Into::into),
-                            row.key.clone(),
-                        ),
+                        Some(ref mut resolver) => {
+                            let skip = resolver.untrack_lock(
+                                row.start_ts.into(),
+                                commit_ts.map(Into::into),
+                                row.key.clone(),
+                            );
+                            if skip {
+                                continue;
+                            }
+                        }
                         None => {
                             assert!(self.pending.is_some(), "region resolver not ready");
                             let pending = self.pending.as_mut().unwrap();
@@ -739,6 +758,7 @@ impl Delegate {
                             lock.min_commit_ts,
                             row.key.clone(),
                             lock.primary,
+                            lock.lock_type,
                         ),
                         None => {
                             assert!(self.pending.is_some(), "region resolver not ready");
@@ -748,6 +768,7 @@ impl Delegate {
                                 start_ts: row.start_ts.into(),
                                 min_commit_ts: TimeStamp::zero(),
                                 primary: lock.primary,
+                                lock_type: lock.lock_type,
                             });
                             pending.pending_bytes += row.key.len();
                             CDC_PENDING_BYTES_GAUGE.add(row.key.len() as i64);
@@ -808,7 +829,7 @@ impl Delegate {
         &mut self,
         start_ts: TimeStamp,
         commit_ts: Option<TimeStamp>,
-        keys: impl Iterator<Item = (Vec<u8>, LockType)>,
+        keys: impl IntoIterator<Item = (Vec<u8>, LockType)>,
     ) {
         let mut rows = HashMap::default();
         let mut total_size = 0;
@@ -816,16 +837,21 @@ impl Delegate {
         for (key, lock_type) in keys {
             let mut row = EventRow::default();
             let write_type = if commit_ts.is_some() {
-                WriteType::from_lock_type(lock_type);
+                WriteType::from_lock_type(lock_type)
             } else {
-                WriteType::Rollback
+                Some(WriteType::Rollback)
             };
+            if write_type.is_none() {
+                // Skip it.
+                continue;
+            }
             // TODO: Is it necessary to carry short value here?
-            let write = WriteRef::new(lock_type, start_ts, None);
-            let skip = write_to_row(key, commit_ts.or(start_ts), write, &mut row);
+            let write = Write::new(write_type.unwrap(), start_ts, None);
+            let skip = write_to_row(key, commit_ts.unwrap_or(start_ts), write, &mut row);
             if skip {
                 continue;
             }
+            total_size += row.key.len();
             let r = rows.insert(row.key.clone(), row);
             assert!(r.is_none());
         }
@@ -838,7 +864,7 @@ impl Delegate {
         event_entries.entries = entries.into();
         let mut change_data_event = Event::default();
         change_data_event.region_id = self.region_id;
-        change_data_event.index = index;
+        // change_data_event.index = index;
         change_data_event.event = Some(Event_oneof_event::Entries(event_entries));
         self.broadcast(change_data_event, total_size, true);
     }
@@ -855,8 +881,7 @@ fn set_event_row_type(row: &mut EventRow, ty: EventLogType) {
     }
 }
 
-fn write_to_row(key: Vec<u8>, key_ts: TimeStamp, write: WriteRef<'_>, row: &mut EventRow) -> bool {
-    let write = WriteRef::parse(value).unwrap().to_owned();
+fn write_to_row(key: Vec<u8>, key_ts: TimeStamp, write: Write, row: &mut EventRow) -> bool {
     let (op_type, r_type) = match write.write_type {
         WriteType::Put => (EventRowOpType::Put, EventLogType::Commit),
         WriteType::Delete => (EventRowOpType::Delete, EventLogType::Commit),
@@ -869,7 +894,7 @@ fn write_to_row(key: Vec<u8>, key_ts: TimeStamp, write: WriteRef<'_>, row: &mut 
     let commit_ts = if write.write_type == WriteType::Rollback {
         0
     } else {
-        key_ts.into_inner();
+        key_ts.into_inner()
     };
     row.start_ts = write.start_ts.into_inner();
     row.commit_ts = commit_ts;
@@ -887,7 +912,12 @@ fn decode_write(key: Vec<u8>, value: &[u8], row: &mut EventRow) -> bool {
     let write = WriteRef::parse(value).unwrap().to_owned();
     let key = Key::from_encoded(key);
     let key_ts = key.decode_ts().unwrap();
-    write_to_row(key.truncate_ts().unwrap(), write, row)
+    write_to_row(
+        key.truncate_ts().unwrap().into_raw().unwrap(),
+        key_ts,
+        write,
+        row,
+    )
 }
 
 fn lock_to_row(key: Vec<u8>, lock: &mut Lock, row: &mut EventRow) -> bool {

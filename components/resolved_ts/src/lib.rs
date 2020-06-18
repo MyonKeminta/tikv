@@ -404,13 +404,21 @@ mod tests {
                 match e {
                     Event::Lock(start_ts, min_commit_ts, key) => {
                         let key = key.into_raw().unwrap();
-                        resolver.track_lock(start_ts.into(), min_commit_ts.into(), key.clone(), key)
+                        resolver.track_lock(
+                            start_ts.into(),
+                            min_commit_ts.into(),
+                            key.clone(),
+                            key,
+                            LockType::Put,
+                        )
                     }
-                    Event::Unlock(start_ts, commit_ts, key) => resolver.untrack_lock(
-                        start_ts.into(),
-                        commit_ts.map(Into::into),
-                        key.into_raw().unwrap(),
-                    ),
+                    Event::Unlock(start_ts, commit_ts, key) => {
+                        resolver.untrack_lock(
+                            start_ts.into(),
+                            commit_ts.map(Into::into),
+                            key.into_raw().unwrap(),
+                        );
+                    }
                     Event::Resolve(min_ts, expect) => assert_eq!(
                         resolver.resolve(min_ts.into()).unwrap(),
                         expect.into(),
@@ -425,13 +433,21 @@ mod tests {
                 match e {
                     Event::Lock(start_ts, min_commit_ts, key) => {
                         let key = key.into_raw().unwrap();
-                        resolver.track_lock(start_ts.into(), min_commit_ts.into(), key.clone(), key)
+                        resolver.track_lock(
+                            start_ts.into(),
+                            min_commit_ts.into(),
+                            key.clone(),
+                            key,
+                            LockType::Put,
+                        )
                     }
-                    Event::Unlock(start_ts, commit_ts, key) => resolver.untrack_lock(
-                        start_ts.into(),
-                        commit_ts.map(Into::into),
-                        key.into_raw().unwrap(),
-                    ),
+                    Event::Unlock(start_ts, commit_ts, key) => {
+                        resolver.untrack_lock(
+                            start_ts.into(),
+                            commit_ts.map(Into::into),
+                            key.into_raw().unwrap(),
+                        );
+                    }
                     Event::Resolve(min_ts, _) => {
                         assert_eq!(resolver.resolve(min_ts.into()), None, "case {}", i)
                     }
@@ -513,6 +529,7 @@ mod tests {
                     min_commit_ts.into(),
                     key.to_vec(),
                     primary.to_vec(),
+                    LockType::Put,
                 );
             }
             let result = resolver.txn_before_ts(case.ts.into());
