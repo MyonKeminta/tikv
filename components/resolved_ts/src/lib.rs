@@ -6,13 +6,21 @@ extern crate slog_global;
 use std::cmp;
 use std::collections::{BTreeMap, HashMap};
 use tikv_util::collections::HashSet;
-use txn_types::TimeStamp;
+use txn_types::{LockType, TimeStamp};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackedTxnStatus {
+    Alive,
+    Committed { commit_ts: TimeStamp },
+    RolledBack,
+}
 
 #[derive(PartialEq, Debug)]
 pub struct TrackedTxn {
     pub min_commit_ts: TimeStamp,
     pub primary: Vec<u8>,
-    pub locked_keys: HashSet<Vec<u8>>,
+    pub locked_keys: HashMap<Vec<u8>, LockType>,
+    pub status: TrackedTxnStatus,
 }
 
 impl TrackedTxn {
@@ -21,6 +29,7 @@ impl TrackedTxn {
             min_commit_ts: TimeStamp::zero(),
             primary,
             locked_keys: Default::default(),
+            status: TrackedTxnStatus::Alive,
         }
     }
 }
@@ -69,6 +78,7 @@ impl Resolver {
         mut min_commit_ts: TimeStamp,
         key: Vec<u8>,
         primary: Vec<u8>,
+        lock_type: LockType,
     ) {
         if min_commit_ts < start_ts {
             min_commit_ts = start_ts.next();
@@ -86,15 +96,18 @@ impl Resolver {
             .entry(start_ts)
             .or_insert_with(|| TrackedTxn::new(primary));
         if locks_entry.min_commit_ts < min_commit_ts {
-            Self::update_min_commit_ts_map(
-                &mut self.txn_min_commit_ts,
-                start_ts,
-                locks_entry.min_commit_ts,
-                min_commit_ts,
-            );
+            // Do not update if the transaction's result is already known.
+            if let TrackedTxnStatus::Alive = locks_entry.status {
+                Self::update_min_commit_ts_map(
+                    &mut self.txn_min_commit_ts,
+                    start_ts,
+                    locks_entry.min_commit_ts,
+                    min_commit_ts,
+                );
+            }
             locks_entry.min_commit_ts = min_commit_ts;
         }
-        locks_entry.locked_keys.insert(key);
+        locks_entry.locked_keys.insert(key, lock_type);
     }
 
     pub fn untrack_lock(
@@ -102,7 +115,7 @@ impl Resolver {
         start_ts: TimeStamp,
         commit_ts: Option<TimeStamp>,
         key: Vec<u8>,
-    ) {
+    ) -> bool {
         debug!(
             "untrack lock {}@{}, commit@{}, region {}",
             hex::encode_upper(key.clone()),
@@ -144,12 +157,21 @@ impl Resolver {
         if let Some(TrackedTxn {
             min_commit_ts,
             locked_keys,
+            status,
             ..
         }) = entry
         {
+            let status = *status;
+            match status {
+                TrackedTxnStatus::Committed { commit_ts: cts } => {
+                    assert_eq!(cts, commit_ts.unwrap())
+                }
+                TrackedTxnStatus::RolledBack => assert!(commit_ts.is_none()),
+                TrackedTxnStatus::Alive => (),
+            }
             let min_commit_ts = *min_commit_ts;
             assert!(
-                locked_keys.remove(&key) || commit_ts.is_none(),
+                locked_keys.remove(&key).is_some() || commit_ts.is_none(),
                 "{}@{}, commit@{} is not tracked, region {}, {:?}",
                 hex::encode_upper(key),
                 start_ts,
@@ -159,13 +181,18 @@ impl Resolver {
             );
             if locked_keys.is_empty() {
                 self.locks.remove(&start_ts);
-                Self::remove_min_commit_ts_entry(
-                    &mut self.txn_min_commit_ts,
-                    start_ts,
-                    min_commit_ts,
-                );
+                // If the transaction's status is known, it should be already removed from the map
+                if let TrackedTxnStatus::Alive = status {
+                    Self::remove_min_commit_ts_entry(
+                        &mut self.txn_min_commit_ts,
+                        start_ts,
+                        min_commit_ts,
+                    );
+                }
             }
+            return status != TrackedTxnStatus::Alive;
         }
+        false
     }
 
     fn update_min_commit_ts_map(
@@ -272,6 +299,28 @@ impl Resolver {
                 }
             }
         }
+    }
+
+    pub fn pre_finish_txn(
+        &mut self,
+        start_ts: TimeStamp,
+        status: TrackedTxnStatus,
+    ) -> Option<Vec<(Vec<u8>, LockType)>> {
+        let txn = match self.locks.get_mut(&start_ts) {
+            Some(txn) => txn,
+            None => {
+                return None;
+            }
+        };
+        txn.status = status;
+        let min_commit_ts = txn.min_commit_ts;
+        Self::remove_min_commit_ts_entry(&mut self.txn_min_commit_ts, start_ts, min_commit_ts);
+        Some(
+            txn.locked_keys
+                .iter()
+                .map(|(k, t)| (k.clone(), *t))
+                .collect(),
+        )
     }
 }
 

@@ -28,7 +28,7 @@ use raftstore::coprocessor::{Cmd, CmdBatch};
 use raftstore::store::fsm::ObserveID;
 use raftstore::store::util::compare_region_epoch;
 use raftstore::Error as RaftStoreError;
-use resolved_ts::Resolver;
+use resolved_ts::{Resolver, TrackedTxnStatus};
 use tikv::storage::txn::TxnEntry;
 use tikv_util::collections::HashMap;
 use tikv_util::mpsc::batch::Sender as BatchSender;
@@ -517,13 +517,35 @@ impl Delegate {
             "region_id" => self.region_id,
             "txns" => txn_status.len());
 
+        let (alive_txns, finished_txns) = txn_status
+            .into_iter()
+            .partition(|t| t.get_min_commit_ts() != 0);
+
         resolver.update_txn_status(
-            txn_status
-                .into_iter()
-                // Only update unfinished transactions
-                .filter(|t| t.get_min_commit_ts() > 0)
-                .map(|t| (t.get_start_ts().into(), t.get_min_commit_ts().into())),
+            alive_txns.map(|t| (t.get_start_ts().into(), t.get_min_commit_ts().into())),
         );
+
+        for txn in finished_txns {
+            let status = if txn.is_rolled_back() {
+                TrackedTxnStatus::RolledBack
+            } else if txn.get_commit_ts() > 0 {
+                TrackedTxnStatus::Committed(txn.get_commit_ts().into())
+            } else {
+                error!("unknown txn status received from CDC. ignroed";
+                    "region_id" => self.region_id,
+                    "start_ts" => txn.get_start_ts(),
+                    "txn_status" => ?txn);
+                continue;
+            };
+
+            let keys = resolver.pre_finish_txn(txn.get_start_ts().into(), status);
+            let commit_ts = if let TrackedTxnStatus(commit_ts) = status {
+                Some(commit_ts)
+            } else {
+                None
+            };
+            self.pre_finish_keys(txn.get_start_ts, commit_ts, keys);
+        }
     }
 
     pub fn on_batch(&mut self, batch: CmdBatch) -> Result<()> {
@@ -781,6 +803,45 @@ impl Delegate {
         self.mark_failed();
         Err(Error::Request(store_err.into()))
     }
+
+    fn pre_finish_keys(
+        &mut self,
+        start_ts: TimeStamp,
+        commit_ts: Option<TimeStamp>,
+        keys: impl Iterator<Item = (Vec<u8>, LockType)>,
+    ) {
+        let mut rows = HashMap::default();
+        let mut total_size = 0;
+
+        for (key, lock_type) in keys {
+            let mut row = EventRow::default();
+            let write_type = if commit_ts.is_some() {
+                WriteType::from_lock_type(lock_type);
+            } else {
+                WriteType::Rollback
+            };
+            // TODO: Is it necessary to carry short value here?
+            let write = WriteRef::new(lock_type, start_ts, None);
+            let skip = write_to_row(key, commit_ts.or(start_ts), write, &mut row);
+            if skip {
+                continue;
+            }
+            let r = rows.insert(row.key.clone(), row);
+            assert!(r.is_none());
+        }
+
+        let mut entries = Vec::with_capacity(rows.len());
+        for (_, v) in rows {
+            entries.push(v);
+        }
+        let mut event_entries = EventEntries::default();
+        event_entries.entries = entries.into();
+        let mut change_data_event = Event::default();
+        change_data_event.region_id = self.region_id;
+        change_data_event.index = index;
+        change_data_event.event = Some(Event_oneof_event::Entries(event_entries));
+        self.broadcast(change_data_event, total_size, true);
+    }
 }
 
 fn set_event_row_type(row: &mut EventRow, ty: EventLogType) {
@@ -794,7 +855,7 @@ fn set_event_row_type(row: &mut EventRow, ty: EventLogType) {
     }
 }
 
-fn decode_write(key: Vec<u8>, value: &[u8], row: &mut EventRow) -> bool {
+fn write_to_row(key: Vec<u8>, key_ts: TimeStamp, write: WriteRef<'_>, row: &mut EventRow) -> bool {
     let write = WriteRef::parse(value).unwrap().to_owned();
     let (op_type, r_type) = match write.write_type {
         WriteType::Put => (EventRowOpType::Put, EventLogType::Commit),
@@ -805,15 +866,14 @@ fn decode_write(key: Vec<u8>, value: &[u8], row: &mut EventRow) -> bool {
             return true;
         }
     };
-    let key = Key::from_encoded(key);
     let commit_ts = if write.write_type == WriteType::Rollback {
         0
     } else {
-        key.decode_ts().unwrap().into_inner()
+        key_ts.into_inner();
     };
     row.start_ts = write.start_ts.into_inner();
     row.commit_ts = commit_ts;
-    row.key = key.truncate_ts().unwrap().into_raw().unwrap();
+    row.key = key;
     row.op_type = op_type.into();
     set_event_row_type(row, r_type);
     if let Some(value) = write.short_value {
@@ -821,6 +881,13 @@ fn decode_write(key: Vec<u8>, value: &[u8], row: &mut EventRow) -> bool {
     }
 
     false
+}
+
+fn decode_write(key: Vec<u8>, value: &[u8], row: &mut EventRow) -> bool {
+    let write = WriteRef::parse(value).unwrap().to_owned();
+    let key = Key::from_encoded(key);
+    let key_ts = key.decode_ts().unwrap();
+    write_to_row(key.truncate_ts().unwrap(), write, row)
 }
 
 fn lock_to_row(key: Vec<u8>, lock: &mut Lock, row: &mut EventRow) -> bool {
