@@ -123,26 +123,6 @@ impl Resolver {
             commit_ts.clone().unwrap_or_else(TimeStamp::zero),
             self.region_id,
         );
-        if let Some(commit_ts) = commit_ts {
-            assert!(
-                self.resolved_ts.map_or(true, |rts| commit_ts > rts),
-                "{}@{}, commit@{} < {:?}, region {}",
-                hex::encode_upper(key),
-                start_ts,
-                commit_ts,
-                self.resolved_ts,
-                self.region_id
-            );
-            assert!(
-                commit_ts > self.min_ts,
-                "{}@{}, commit@{} < {:?}, region {}",
-                hex::encode_upper(key),
-                start_ts,
-                commit_ts,
-                self.min_ts,
-                self.region_id
-            );
-        }
 
         let entry = self.locks.get_mut(&start_ts);
         // It's possible that rollback happens on a not existing transaction.
@@ -154,6 +134,8 @@ impl Resolver {
             commit_ts.unwrap_or_else(TimeStamp::zero),
             self.region_id
         );
+
+        let mut skip = false;
         if let Some(TrackedTxn {
             min_commit_ts,
             locked_keys,
@@ -190,9 +172,33 @@ impl Resolver {
                     );
                 }
             }
-            return status != TrackedTxnStatus::Alive;
+            skip = status != TrackedTxnStatus::Alive;
         }
-        false
+
+        if !skip {
+            if let Some(commit_ts) = commit_ts {
+                assert!(
+                    self.resolved_ts.map_or(true, |rts| commit_ts > rts),
+                    "{}@{}, commit@{} < {:?}, region {}",
+                    hex::encode_upper(key),
+                    start_ts,
+                    commit_ts,
+                    self.resolved_ts,
+                    self.region_id
+                );
+                assert!(
+                    commit_ts > self.min_ts,
+                    "{}@{}, commit@{} < {:?}, region {}",
+                    hex::encode_upper(key),
+                    start_ts,
+                    commit_ts,
+                    self.min_ts,
+                    self.region_id
+                );
+            }
+        }
+
+        skip
     }
 
     fn update_min_commit_ts_map(
