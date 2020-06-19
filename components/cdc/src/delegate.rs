@@ -557,6 +557,7 @@ impl Delegate {
                 } else {
                     None
                 };
+                info!("cdc pre finish transaction"; "start_ts" => txn.get_start_ts(), "commit_ts" => ?commit_ts);
                 self.pre_finish_keys(txn.get_start_ts().into(), commit_ts, keys);
             }
         }
