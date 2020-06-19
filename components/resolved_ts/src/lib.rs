@@ -312,6 +312,12 @@ impl Resolver {
                 return None;
             }
         };
+        if txn.status != TrackedTxnStatus::Alive {
+            // The txn is already pre-finished.
+            assert_eq!(txn.status, status);
+            info!("repeated pre_finish_txn operation"; "start_ts" => start_ts, "status" => ?status);
+            return None;
+        }
         txn.status = status;
         let min_commit_ts = txn.min_commit_ts;
         Self::remove_min_commit_ts_entry(&mut self.txn_min_commit_ts, start_ts, min_commit_ts);
