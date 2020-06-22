@@ -454,8 +454,12 @@ impl Delegate {
             Some(rts) => rts,
             None => return None,
         };
-        debug!("resolved ts updated";
+        info!("resolved ts updated";
             "region_id" => self.region_id, "resolved_ts" => resolved_ts);
+        if min_ts.physical() - resolved_ts.physical() > 10000 {
+            warn!("region resolved ts lagging from tso more than 10s";
+                "region_id" => self.region_id, "min_ts" => min_ts, "resolved_ts" => resolved_ts);
+        }
         let mut change_data_event = Event::default();
         change_data_event.region_id = self.region_id;
         change_data_event.event = Some(Event_oneof_event::ResolvedTs(resolved_ts.into_inner()));
@@ -557,7 +561,7 @@ impl Delegate {
                 } else {
                     None
                 };
-                info!("cdc pre finish transaction"; "start_ts" => txn.get_start_ts(), "commit_ts" => ?commit_ts);
+                info!("cdc pre finish transaction"; "region_id" => self.region_id, "start_ts" => txn.get_start_ts(), "commit_ts" => ?commit_ts);
                 self.pre_finish_keys(txn.get_start_ts().into(), commit_ts, keys);
             }
         }
