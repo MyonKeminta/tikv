@@ -36,4 +36,15 @@ lazy_static! {
         "Total number of CDC captured regions"
     )
     .unwrap();
+    pub static ref CDC_PRE_FINISH_TXN_DURATION_HISTOGRAM: Histogram = register_histogram!(
+        "tikv_cdc_pre_finish_txn_duration_seconds",
+        "Bucketed histogram of cdc pre finish txn",
+        exponential_buckets(0.0001, 2.0, 20).unwrap()
+    )
+    .unwrap();
+    pub static ref CDC_SINK_CHANNEL_SIZE_BYTES: IntGauge = register_int_gauge!(
+        "tikv_cdc_sink_channel_size_bytes",
+        "Bytes in memory of a pending region"
+    )
+    .unwrap(); 
 }

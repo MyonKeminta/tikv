@@ -1,5 +1,6 @@
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
 
+use std::convert::TryInto;
 use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -143,6 +144,8 @@ impl Downstream {
             .is_err()
         {
             error!("send event failed"; "downstream" => %self.peer);
+        } else {
+            CDC_SINK_CHANNEL_SIZE_BYTES.add(size.try_into().unwrap());
         }
     }
 
@@ -556,6 +559,8 @@ impl Delegate {
                 .unwrap()
                 .pre_finish_txn(txn.get_start_ts().into(), status)
             {
+                use std::time::Instant;
+                let t = Instant::now();
                 let commit_ts = if let TrackedTxnStatus::Committed { commit_ts } = status {
                     Some(commit_ts)
                 } else {
@@ -563,6 +568,7 @@ impl Delegate {
                 };
                 info!("cdc pre finish transaction"; "region_id" => self.region_id, "start_ts" => txn.get_start_ts(), "commit_ts" => ?commit_ts);
                 self.pre_finish_keys(txn.get_start_ts().into(), commit_ts, keys);
+                CDC_SCAN_DURATION_HISTOGRAM.observe(t.elapsed().as_secs_f64());
             }
         }
     }

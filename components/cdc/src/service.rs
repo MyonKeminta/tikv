@@ -1,6 +1,7 @@
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
 
 use std::collections::hash_map::Entry;
+use std::convert::TryInto;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ use tikv_util::worker::*;
 
 use crate::delegate::{Downstream, DownstreamID};
 use crate::endpoint::{Deregister, Task};
+use crate::metrics::*;
 
 static CONNECTION_ID_ALLOC: AtomicUsize = AtomicUsize::new(0);
 
@@ -172,6 +174,7 @@ impl ChangeData for Service {
                 let mut event_vecs = vec![Vec::with_capacity(events_len)];
                 let mut current_events_size = 0;
                 for (size, event) in events {
+                    CDC_SINK_CHANNEL_SIZE_BYTES.sub(size.try_into().unwrap());
                     if current_events_size + size >= CDC_MAX_RESP_SIZE {
                         event_vecs.push(Vec::with_capacity(events_len));
                         current_events_size = 0;
