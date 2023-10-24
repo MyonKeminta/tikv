@@ -1836,3 +1836,8 @@ fn test_raw_put_deadline() {
     assert!(!put_resp.has_region_error(), "{:?}", put_resp);
     must_get_equal(&cluster.get_engine(1), b"k3", b"v3");
 }
+
+#[test]
+fn test_storage_do_not_update_txn_status_cache_on_write_error() {
+
+}
