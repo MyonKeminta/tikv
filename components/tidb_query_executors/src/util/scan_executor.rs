@@ -121,6 +121,7 @@ impl<S: Storage, I: ScanExecutorImpl, F: KvFormat> ScanExecutor<S, I, F> {
                     // further cause future executors to panic. So let's truncate these columns to
                     // make they all have N-1 rows in that case.
                     columns.truncate_into_equal_length();
+                    error!("received error from process_kv_pair"; "key" => log_wrappers::Value::key(key), "value" => log_wrappers::Value::value(value), "error"=>?e, "backtrace" => ?std::backtrace::Backtrace::force_capture());
                     return Err(e);
                 }
             } else {

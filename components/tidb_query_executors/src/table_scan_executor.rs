@@ -229,6 +229,7 @@ impl TableScanExecutorImpl {
 
     fn process_v2(
         &mut self,
+        key: &[u8],
         value: &[u8],
         columns: &mut LazyBatchColumnVec,
         decoded_columns: &mut usize,
@@ -239,7 +240,7 @@ impl TableScanExecutorImpl {
         };
 
         let row = RowSlice::from_bytes(value)?;
-        error!("table_scan_executor: process_v2 called"; "value" => log_wrappers::Value::value(value), "row_slice" => ?row);
+        error!("table_scan_executor: process_v2 called"; "key" => log_wrappers::Value::key(key), "value" => log_wrappers::Value::value(value), "row_slice" => ?row);
         for (col_id, idx) in &self.column_id_index {
             if self.is_column_filled[*idx] {
                 continue;
@@ -354,7 +355,9 @@ impl ScanExecutorImpl for TableScanExecutorImpl {
             // Do nothing
         } else {
             match value[0] {
-                row::v2::CODEC_VERSION => self.process_v2(value, columns, &mut decoded_columns)?,
+                row::v2::CODEC_VERSION => {
+                    self.process_v2(key, value, columns, &mut decoded_columns)?
+                }
                 _ => self.process_v1(key, value, columns, &mut decoded_columns)?,
             }
         }
