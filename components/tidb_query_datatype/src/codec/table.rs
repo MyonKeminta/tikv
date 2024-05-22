@@ -467,6 +467,7 @@ fn cut_row_v2(data: Vec<u8>, cols: Arc<[ColumnInfo]>) -> Result<RowColsDict> {
     let mut result = Vec::with_capacity(data.len() + cols.len() * 8);
 
     let row_slice = RowSlice::from_bytes(&data)?;
+    error!("cut_row_v2 called"; "value" => log_wrappers::Value::value(&data), "row_slice" => ?row_slice);
     for col in cols.iter() {
         let id = col.get_column_id();
         if let Some((start, offset)) = row_slice.search_in_non_null_ids(id)? {

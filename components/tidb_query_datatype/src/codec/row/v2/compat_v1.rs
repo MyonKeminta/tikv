@@ -17,9 +17,13 @@ pub fn decode_v2_u64(v: &[u8]) -> Result<u64> {
         2 => Ok(u64::from(NumberCodec::decode_u16_le(v))),
         4 => Ok(u64::from(NumberCodec::decode_u32_le(v))),
         8 => Ok(NumberCodec::decode_u64_le(v)),
-        _ => Err(Error::InvalidDataType(
-            "Failed to decode row v2 data as u64".to_owned(),
-        )),
+        _ => {
+            error!("failed to decode row v2 data as u64"; "value" => log_wrappers::Value::value(v), "backtrace" => ?std::backtrace::Backtrace::force_capture());
+            Err(Error::InvalidDataType(format!(
+                "Failed to decode row v2 data as u64, value: {}",
+                log_wrappers::Value::value(v)
+            )))
+        }
     }
 }
 
@@ -31,9 +35,13 @@ fn decode_v2_i64(v: &[u8]) -> Result<i64> {
         2 => Ok(i64::from(NumberCodec::decode_u16_le(v) as i16)),
         4 => Ok(i64::from(NumberCodec::decode_u32_le(v) as i32)),
         8 => Ok(NumberCodec::decode_u64_le(v) as i64),
-        _ => Err(Error::InvalidDataType(
-            "Failed to decode row v2 data as i64".to_owned(),
-        )),
+        _ => {
+            error!("failed to decode row v2 data as i64"; "value" => log_wrappers::Value::value(v), "backtrace" => ?std::backtrace::Backtrace::force_capture());
+            Err(Error::InvalidDataType(format!(
+                "Failed to decode row v2 data as i64, value: {}",
+                log_wrappers::Value::value(v)
+            )))
+        }
     }
 }
 

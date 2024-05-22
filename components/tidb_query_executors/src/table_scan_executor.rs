@@ -239,6 +239,7 @@ impl TableScanExecutorImpl {
         };
 
         let row = RowSlice::from_bytes(value)?;
+        error!("table_scan_executor: process_v2 called"; "value" => log_wrappers::Value::value(value), "row_slice" => ?row);
         for (col_id, idx) in &self.column_id_index {
             if self.is_column_filled[*idx] {
                 continue;
