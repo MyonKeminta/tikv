@@ -1515,6 +1515,7 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
             Some(txn_ext) => txn_ext,
             None => return false,
         };
+        fail_point!("skip_write_in_memory_pessimistic_lock", |_| true);
         let mut pessimistic_locks = txn_ext.pessimistic_locks.write();
         // When not writable, it only means we cannot write locks to the in-memory lock
         // table, but it is still possible for the region to propose request.
